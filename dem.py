@@ -1,13 +1,14 @@
 import taichi as ti
 import math
 import os
+import numpy as np
 
 ti.init(arch=ti.gpu)
 vec = ti.math.vec2
 
 SAVE_FRAMES = False
 
-window_size = 1024  # Number of pixels of the window
+window_size = 512  # Number of pixels of the window
 n = 8192  # Number of grains
 
 density = 100.0
@@ -28,10 +29,11 @@ class Grain:
     f: vec  # Force
 
 
-gf = Grain.field(shape=(n, ))
+gf = Grain.field(shape=(n,))
 
+length = 1.0
 grid_n = 128
-grid_size = 1.0 / grid_n  # Simulation domain of size [0, 1]
+grid_size = length / grid_n  # Simulation domain of size [0, 1]
 print(f"Grid size: {grid_n}x{grid_n}")
 
 grain_r_min = 0.002
@@ -45,13 +47,15 @@ def init():
     for i in gf:
         # Spread grains in a restricted area.
         l = i * grid_size
-        padding = 0.1
-        region_width = 1.0 - padding * 2
-        pos = vec(l % region_width + padding + grid_size * ti.random() * 0.2,
-                  l // region_width * grid_size + 0.3)
+        padding = 0.1 * length
+        region_width = length - padding * 2
+        pos = vec(
+            l % region_width + padding + grid_size * ti.random() * 0.2,
+            l // region_width * grid_size + 0.3 * length,
+        )
         gf[i].p = pos
         gf[i].r = ti.random() * (grain_r_max - grain_r_min) + grain_r_min
-        gf[i].m = density * math.pi * gf[i].r**2
+        gf[i].m = density * math.pi * gf[i].r ** 2
 
 
 @ti.kernel
@@ -61,6 +65,12 @@ def update():
         gf[i].v += (gf[i].a + a) * dt / 2.0
         gf[i].p += gf[i].v * dt + 0.5 * a * dt**2
         gf[i].a = a
+
+
+@ti.kernel
+def apply_gravity():
+    for i in gf:
+        gf[i].f = vec(0.0, gravity * gf[i].m)
 
 
 @ti.kernel
@@ -74,23 +84,21 @@ def apply_bc():
             gf[i].p[1] = gf[i].r
             gf[i].v[1] *= -bounce_coef
 
-        elif y + gf[i].r > 1.0:
-            gf[i].p[1] = 1.0 - gf[i].r
+        elif y + gf[i].r > length:
+            gf[i].p[1] = length - gf[i].r
             gf[i].v[1] *= -bounce_coef
 
-        if x - gf[i].r < 0:
-            gf[i].p[0] = gf[i].r
-            gf[i].v[0] *= -bounce_coef
-
-        elif x + gf[i].r > 1.0:
-            gf[i].p[0] = 1.0 - gf[i].r
-            gf[i].v[0] *= -bounce_coef
+        if x < 0:
+            gf[i].p[0] += length
+        elif x > length:
+            gf[i].p[0] -= length
 
 
 @ti.func
-def resolve(i, j):
+def resolve(i, j, shift):
     rel_pos = gf[j].p - gf[i].p
-    dist = ti.sqrt(rel_pos[0]**2 + rel_pos[1]**2)
+    rel_pos[0] -= shift
+    dist = ti.sqrt(rel_pos[0] ** 2 + rel_pos[1] ** 2)
     delta = -dist + gf[i].r + gf[j].r  # delta = d - 2 * r
     if delta > 0:  # in contact
         normal = rel_pos / dist
@@ -98,8 +106,11 @@ def resolve(i, j):
         # Damping force
         M = (gf[i].m * gf[j].m) / (gf[i].m + gf[j].m)
         K = stiffness
-        C = 2. * (1. / ti.sqrt(1. + (math.pi / ti.log(restitution_coef))**2)
-                  ) * ti.sqrt(K * M)
+        C = (
+            2.0
+            * (1.0 / ti.sqrt(1.0 + (math.pi / ti.log(restitution_coef)) ** 2))
+            * ti.sqrt(K * M)
+        )
         V = (gf[j].v - gf[i].v) * normal
         f2 = C * V * normal
         gf[i].f += f2 - f1
@@ -110,9 +121,7 @@ list_head = ti.field(dtype=ti.i32, shape=grid_n * grid_n)
 list_cur = ti.field(dtype=ti.i32, shape=grid_n * grid_n)
 list_tail = ti.field(dtype=ti.i32, shape=grid_n * grid_n)
 
-grain_count = ti.field(dtype=ti.i32,
-                       shape=(grid_n, grid_n),
-                       name="grain_count")
+grain_count = ti.field(dtype=ti.i32, shape=(grid_n, grid_n), name="grain_count")
 column_sum = ti.field(dtype=ti.i32, shape=grid_n, name="column_sum")
 prefix_sum = ti.field(dtype=ti.i32, shape=(grid_n, grid_n), name="prefix_sum")
 particle_id = ti.field(dtype=ti.i32, shape=n, name="particle_id")
@@ -120,12 +129,9 @@ particle_id = ti.field(dtype=ti.i32, shape=n, name="particle_id")
 
 @ti.kernel
 def contact(gf: ti.template()):
-    '''
+    """
     Handle the collision between grains.
-    '''
-    for i in gf:
-        gf[i].f = vec(0., gravity * gf[i].m)  # Apply gravity.
-
+    """
     grain_count.fill(0)
 
     for i in range(n):
@@ -163,49 +169,54 @@ def contact(gf: ti.template()):
         grain_location = ti.atomic_add(list_cur[linear_idx], 1)
         particle_id[grain_location] = i
 
-    # Brute-force collision detection
-    '''
-    for i in range(n):
-        for j in range(i + 1, n):
-            resolve(i, j)
-    '''
-
     # Fast collision detection
     for i in range(n):
         grid_idx = ti.floor(gf[i].p * grid_n, int)
-        x_begin = max(grid_idx[0] - 1, 0)
-        x_end = min(grid_idx[0] + 2, grid_n)
+        x_begin = grid_idx[0] - 1
+        x_end = grid_idx[0] + 2
 
-        y_begin = max(grid_idx[1] - 1, 0)
-        y_end = min(grid_idx[1] + 2, grid_n)
+        y_begin = ti.max(grid_idx[1] - 1, 0)
+        y_end = ti.min(grid_idx[1] + 2, grid_n)
 
-        for neigh_i in range(x_begin, x_end):
+        for x_i in range(x_begin, x_end):
+            neigh_i = x_i % grid_n
             for neigh_j in range(y_begin, y_end):
                 neigh_linear_idx = neigh_i * grid_n + neigh_j
-                for p_idx in range(list_head[neigh_linear_idx],
-                                   list_tail[neigh_linear_idx]):
+                for p_idx in range(
+                    list_head[neigh_linear_idx], list_tail[neigh_linear_idx]
+                ):
                     j = particle_id[p_idx]
                     if i < j:
-                        resolve(i, j)
+                        if x_i != -1 and x_i != grid_n:
+                            resolve(i, j, 0)
+                        elif x_i == -1:
+                            resolve(i, j, length)
+                        else:
+                            resolve(i, j, -length)
 
 
 init()
-gui = ti.GUI('Taichi DEM', (window_size, window_size))
+gui = ti.GUI("Taichi DEM", (2 * window_size, window_size))
 step = 0
 
 if SAVE_FRAMES:
-    os.makedirs('output', exist_ok=True)
+    os.makedirs("output", exist_ok=True)
 
 while gui.running:
-    for s in range(substeps):
-        update()
-        apply_bc()
+    for _ in range(substeps):
+        apply_gravity()
         contact(gf)
-    pos = gf.p.to_numpy()
+        apply_bc()
+        update()
+
+    pos = gf.p.to_numpy() + np.array([0.5 * length, 0])
+    periodic_pos = pos + np.array([length, 0.0])
+    periodic_pos[pos[:, 0] > length, 0] -= 2.0 * length
     r = gf.r.to_numpy() * window_size
-    gui.circles(pos, radius=r)
+    gui.circles(pos * np.array([0.5, 1.0]), radius=r)
+    gui.circles(periodic_pos * np.array([0.5, 1.0]), radius=r, color=0xDC7633)
     if SAVE_FRAMES:
-        gui.show(f'output/{step:06d}.png')
+        gui.show(f"output/{step:06d}.png")
     else:
         gui.show()
     step += 1
