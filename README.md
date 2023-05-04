@@ -3,4 +3,4 @@ A minimal DEM simulation demo written in Taichi from [taichi-dev/taichi_dem](htt
 
 Implementation of periodic boundary conditions.
 
-<img src="periodic.gif" height="270px">
+<img src="periodic.gif" width="100%">
