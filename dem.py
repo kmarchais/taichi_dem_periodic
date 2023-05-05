@@ -49,11 +49,10 @@ def init():
         l = i * grid_size
         padding = 0.1 * length
         region_width = length - padding * 2
-        pos = vec(
+        gf[i].p = vec(
             l % region_width + padding + grid_size * ti.random() * 0.2,
-            l // region_width * grid_size + 0.3 * length,
+            l // region_width * grid_size + 0.1 * length,
         )
-        gf[i].p = pos
         gf[i].r = ti.random() * (grain_r_max - grain_r_min) + grain_r_min
         gf[i].m = density * math.pi * gf[i].r ** 2
 
@@ -128,14 +127,14 @@ particle_id = ti.field(dtype=ti.i32, shape=n, name="particle_id")
 
 
 @ti.kernel
-def contact(gf: ti.template()):
+def contact():
     """
     Handle the collision between grains.
     """
     grain_count.fill(0)
 
     for i in range(n):
-        grid_idx = ti.floor(gf[i].p * grid_n, int)
+        grid_idx = ti.floor(gf[i].p * grid_n / length, int)
         grain_count[grid_idx] += 1
 
     for i in range(grid_n):
@@ -164,14 +163,14 @@ def contact(gf: ti.template()):
             list_tail[linear_idx] = prefix_sum[i, j]
 
     for i in range(n):
-        grid_idx = ti.floor(gf[i].p * grid_n, int)
+        grid_idx = ti.floor(gf[i].p * grid_n / length, int)
         linear_idx = grid_idx[0] * grid_n + grid_idx[1]
         grain_location = ti.atomic_add(list_cur[linear_idx], 1)
         particle_id[grain_location] = i
 
     # Fast collision detection
     for i in range(n):
-        grid_idx = ti.floor(gf[i].p * grid_n, int)
+        grid_idx = ti.floor(gf[i].p * grid_n / length, int)
         x_begin = grid_idx[0] - 1
         x_end = grid_idx[0] + 2
 
@@ -196,7 +195,7 @@ def contact(gf: ti.template()):
 
 
 init()
-gui = ti.GUI("Taichi DEM", (2 * window_size, window_size))
+gui = ti.GUI("Taichi DEM", (int(2 * length * window_size), int(length * window_size)))
 step = 0
 
 if SAVE_FRAMES:
@@ -205,16 +204,21 @@ if SAVE_FRAMES:
 while gui.running:
     for _ in range(substeps):
         apply_gravity()
-        contact(gf)
+        contact()
         apply_bc()
         update()
 
-    pos = gf.p.to_numpy() + np.array([0.5 * length, 0])
-    periodic_pos = pos + np.array([length, 0.0])
-    periodic_pos[pos[:, 0] > length, 0] -= 2.0 * length
+    pos = gf.p.to_numpy() / (2.0 * length)
+    pos[:, 0] += 0.25
+    periodic_pos = pos + np.array([0.5, 0.0])
+    periodic_pos[pos[:, 0] > 0.5, 0] -= 1.0
     r = gf.r.to_numpy() * window_size
-    gui.circles(pos * np.array([0.5, 1.0]), radius=r)
-    gui.circles(periodic_pos * np.array([0.5, 1.0]), radius=r, color=0xDC7633)
+    gui.circles(pos, radius=r)
+    gui.circles(
+        periodic_pos,
+        radius=r,
+        color=0xDC7633,
+    )
     if SAVE_FRAMES:
         gui.show(f"output/{step:06d}.png")
     else:
