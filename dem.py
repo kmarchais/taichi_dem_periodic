@@ -29,7 +29,7 @@ class Grain:
     f: vec  # Force
 
 
-gf = Grain.field(shape=(n,))
+gf = Grain.field(shape=(n, ))
 
 length = 1.0
 grid_n = 128
@@ -54,7 +54,7 @@ def init():
             l // region_width * grid_size + 0.1 * length,
         )
         gf[i].r = ti.random() * (grain_r_max - grain_r_min) + grain_r_min
-        gf[i].m = density * math.pi * gf[i].r ** 2
+        gf[i].m = density * math.pi * gf[i].r**2
 
 
 @ti.kernel
@@ -97,7 +97,7 @@ def apply_bc():
 def resolve(i, j, shift):
     rel_pos = gf[j].p - gf[i].p
     rel_pos[0] -= shift
-    dist = ti.sqrt(rel_pos[0] ** 2 + rel_pos[1] ** 2)
+    dist = ti.sqrt(rel_pos[0]**2 + rel_pos[1]**2)
     delta = -dist + gf[i].r + gf[j].r  # delta = d - 2 * r
     if delta > 0:  # in contact
         normal = rel_pos / dist
@@ -105,11 +105,9 @@ def resolve(i, j, shift):
         # Damping force
         M = (gf[i].m * gf[j].m) / (gf[i].m + gf[j].m)
         K = stiffness
-        C = (
-            2.0
-            * (1.0 / ti.sqrt(1.0 + (math.pi / ti.log(restitution_coef)) ** 2))
-            * ti.sqrt(K * M)
-        )
+        C = (2.0 * (1.0 / ti.sqrt(1.0 +
+                                  (math.pi / ti.log(restitution_coef))**2)) *
+             ti.sqrt(K * M))
         V = (gf[j].v - gf[i].v) * normal
         f2 = C * V * normal
         gf[i].f += f2 - f1
@@ -120,7 +118,9 @@ list_head = ti.field(dtype=ti.i32, shape=grid_n * grid_n)
 list_cur = ti.field(dtype=ti.i32, shape=grid_n * grid_n)
 list_tail = ti.field(dtype=ti.i32, shape=grid_n * grid_n)
 
-grain_count = ti.field(dtype=ti.i32, shape=(grid_n, grid_n), name="grain_count")
+grain_count = ti.field(dtype=ti.i32,
+                       shape=(grid_n, grid_n),
+                       name="grain_count")
 column_sum = ti.field(dtype=ti.i32, shape=grid_n, name="column_sum")
 prefix_sum = ti.field(dtype=ti.i32, shape=(grid_n, grid_n), name="prefix_sum")
 particle_id = ti.field(dtype=ti.i32, shape=n, name="particle_id")
@@ -181,9 +181,8 @@ def contact():
             neigh_i = x_i % grid_n
             for neigh_j in range(y_begin, y_end):
                 neigh_linear_idx = neigh_i * grid_n + neigh_j
-                for p_idx in range(
-                    list_head[neigh_linear_idx], list_tail[neigh_linear_idx]
-                ):
+                for p_idx in range(list_head[neigh_linear_idx],
+                                   list_tail[neigh_linear_idx]):
                     j = particle_id[p_idx]
                     if i < j:
                         if x_i != -1 and x_i != grid_n:
@@ -195,7 +194,8 @@ def contact():
 
 
 init()
-gui = ti.GUI("Taichi DEM", (int(2 * length * window_size), int(length * window_size)))
+gui = ti.GUI("Taichi DEM",
+             (int(2 * length * window_size), int(length * window_size)))
 step = 0
 
 if SAVE_FRAMES:
